@@ -1,0 +1,446 @@
+---
+title: "Statistical analysis of EEG data"
+author: "Butovens Médé"
+date: "3/3/2021"
+output: 
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+### Load libraries needed
+# install.packages("tidyverse", "dplyr", "skimr", "brms", "tidybayes")
+library(tidyverse)
+library(dplyr)
+library(skimr)
+library(brms)
+library(tidybayes)
+
+### Load data ERP data
+erp_data <- read_csv(file.choose()) # choose erp_data.csv file
+erp_norms <- read_csv(file.choose()) # choose erp_norms.csv file
+
+### Look at data
+erp_data %>% skim()
+erp_data %>% glimpse()
+erp_norms %>% skim()
+erp_norms %>% glimpse()
+erp_data %>% view() %>% head()
+```
+
+### Problem 1
+##### A)
+```{r}
+### Filter out n4 from ERP data and data with artifacts
+p6_erp_data <- erp_data %>% 
+  # filter data by time window and no artifact
+  filter(time_window == "p6" & artefact == 0) 
+
+### Show result
+p6_erp_data
+```
+
+
+#### B)
+```{r}
+### Average amplitude for items & conditions
+p6_Amp_mean <- p6_erp_data %>% 
+  # group by item and condition
+  group_by(itemNum, condition) %>% 
+  # summarize count, 
+  summarize(count = n(), 
+              # summarize mean P6 per items in conditions
+              mean_p6_amp = mean(meanAmp)) %>% 
+  # ungroup data
+  ungroup()
+
+### Show result
+p6_Amp_mean
+
+# ### Average amplitude for items
+# p6_item_mean <- p6_erp_data %>%
+#   group_by(itemNum) %>%
+#   summarize(count = n(),
+#             mean_p6_amp = mean(meanAmp)) %>%
+#   ungroup()
+# 
+# ### Result for item mean
+# p6_item_mean
+# 
+### Average amplitude for conditions
+# p6_cond_mean <- p6_erp_data %>%
+#   group_by(condition) %>%
+#   summarize(count = n(),
+#             mean_p6_amp = mean(meanAmp)) %>%
+#   ungroup()
+# # 
+# ### Result for condition mean
+# p6_cond_mean
+```
+
+
+#### C)
+```{r}
+### calculate the difference in amplitude between each of the other three conditions and control
+diff_Amp_p6 <- p6_Amp_mean %>% 
+  # Pivot wider with names taken form conditions
+  pivot_wider(id_cols = itemNum, names_from = condition, 
+              # values taken from mean p6 amplitude
+              values_from = mean_p6_amp) %>%
+  # add column of different between conditions and Control
+  mutate(sem_diff = Sem - Control,
+         semCrit_diff = SemCrit - Control,
+         synt_diff = Synt - Control)
+
+### Show result
+diff_Amp_p6
+```
+
+
+#### D)
+```{r}
+# ### add percent recovered column
+#   erp_norms_perc_rec <- erp_norms %>% 
+#     # create percent recovered column by dividing number of unique words by total completions 
+#     mutate(Percent_recovered = n_distinct(`Intended Word`) / `Total Completions`)
+# # Percent_recovered results do not look right...
+
+
+### add percent recovered column
+  erp_norms_perc_rec <- erp_norms %>%
+    # create percent recovered column by dividing 'Intended Completion' (instead of 'Intended Word') by total completions
+    mutate(Percent_recovered = `Intended Completion`  / `Total Completions`)
+
+# Result
+erp_norms_perc_rec
+  
+```
+
+
+#### E)
+```{r}
+# join norms data to summarized erp data (with condition differences values) by item numbers and condition
+joined_P600_data <- diff_Amp_p6 %>% 
+  # Pivot columns into rows
+  pivot_longer(cols = Control:synt_diff, names_to = "Condition", values_to = "values") %>% 
+  # join 
+  left_join(erp_norms_perc_rec, by = c('itemNum' = 'Item', 'Condition'))
+
+# Result
+joined_P600_data
+```
+
+
+#### F)
+```{r}
+### Plot P600 amplitude by item over percent recovered
+ggplot(data = joined_P600_data  %>% filter(Condition == 'Sem' | Condition == 'SemCrit' | Condition == 'Synt')) +
+  geom_point(aes(x = Percent_recovered, y = values, color = itemNum)) +
+  geom_smooth(aes(x = Percent_recovered, y = values, color = itemNum), method = 'lm') +
+  labs(title = "P600 amplitude (relative to control) by item over Percent_recovered",
+        x = "Percent Recovered",
+        y = "Mean P600 Amp (in µV)") +
+    theme_bw() +
+    theme(text=element_text(size = 12)) 
+```
+*Note: As R does list-wise deletion when there is missing data, the figure could have been plotted without filtering by conditions (in the first line of code)*
+
+#### G)
+```{r}
+### Linear regression using lm() to test if the P600 amplitude is related to the probability that the intended word can be recovered
+
+# Create smaller data set with only necessary values
+P_600_data_short <- joined_P600_data %>% 
+  # filter data (also not necessary as R does listwise deletion for missing data)
+  filter(Condition == 'Sem' | Condition == 'SemCrit' | Condition == 'Synt') 
+ 
+# Linear model
+model <- lm(values ~ 1 + Percent_recovered, data = P_600_data_short)
+
+# Result
+summary(model)
+```
+* The regression results tell us that there seems to be a significant relationship between the p600 amplitude and the probability that the intended word can be recovered. The intercept and the slope are both significant. The intercept in this context can be seen the overall average of the p600 amplitude in µV at baseline *Note: I may be mistaken here*. 
+
+* The slope here can be interpreted as the change of p600 in µV for every one unit of change (in percentage) that the word can be recovered. Here, for every 1 unit (in percentage) increase, p600 increases by 2.53µV. 
+
+* The RSE (i.e. Residual Square Error) estimate tells us the averaged amount that the response will deviate from the true regression line. Thus, here actual p600 amplitude deviate by approximately 3.5µV from the true regression line (on average)
+
+* The Adjusted R-squared tells us that the relationship between the p600 amplitude and the probability that the intended word can be recovered although significant, is very small. It accounts only for 5% of the total variance seen in the data. In other words, 5% of the variability in p600 amplitude is explained by a linear regression on probability that the intended word can be recovered.
+
+#### H)
+```{r}
+### Check model assumptions
+plot(model)
+```
+
+###### Non-linearity of the response-predictor relationship
+* The Residual vs fitted plot lets us know the presence (or absence) of patterns in the residuals. Here the smooth fit (i.e. red line) is almost straight showing that there is no trend in the residuals. Thus, it is safe to assume that the assumption of linearity between the responses and the predictor has not been violated.
+
+###### Correlation of error terms
+* Here again the Residual vs fitted plot lets us know that there doesn't seem to be any correlated error terms. The points seem randomly scattered, and it does not appear that there is a relationship. The i.i.d. (independent, identically distributed) residual error assumption has not been violated.
+
+
+###### Non-constant variance of error terms
+* The Scale-Location plot shows whether or not the residuals are spread equally along the ranges of predictors. Here, there doesn't seem to be any pattern indicating that the homoscedasticity assumption has been violated. i.e. the smooth fit appear to be a straight line with standardized residuals roughly equally spread below and above the line with no distinctive pattern.
+
+##### Outliers
+```{r}
+### Create box plot to detect outliers
+ggplot(P_600_data_short) +
+  aes(x = "", y = values) +
+  geom_boxplot(fill = "#0c4c8a") +
+  theme_minimal()
+
+### Extract potential outlier values
+boxplot.stats(P_600_data_short$values)$out
+
+### Save potential outlier values
+out <- boxplot.stats(P_600_data_short$values)$out
+
+### Determine index of potential outliers
+out_ind <- which(P_600_data_short$values %in% out)
+
+### Potential outlier index
+out_ind
+
+### Info about potential outliers
+P_600_data_short[out_ind, ]
+```
+
+* There seem to be a few potential outliers. They might (or not) have some influence on the data.
+
+
+```{r}
+### Alternative to detect outliers: Rosner’s test which is used to detect several outliers at once and is designed to avoid the problem of masking (i.e. outlier that is close in value to another outlier that goes undetected.)
+test_result <- EnvStats::rosnerTest(P_600_data_short$values, 
+                                    # Number of suspected outliers
+                                    k = 7)
+
+# Result
+test_result$all.stats
+```
+
+* The Rosner's test tells us that there is actually no outliers in our data set.
+
+###### High-leverage points
+* High leverage observations have substantial impact on the least-squares line (or line of best fit). They have high Cook's distance value. Here the residuals vs leverage plots shows that there is no influential case, or cases. We can barely see Cook’s distance lines (a red dashed line) because all cases are well inside of the Cook’s distance lines.
+
+###### Collinearity
+* Collinearity is when two or more predictors are closely related to one another. Here we don't need to check for collinearity because we only have one predictor variable.
+
+
+##### I)
+* It appears that none of the linear regression assumptions i.e. Linearity, Independence (of error terms), Homoscedasticity, (Normality with teh Q-Q plot), as well as Outlier, High leverage points, and Collinearity, has been violated. Thus the results found in Question 1-G) seem reliable.  
+
+
+### Problem 2
+##### A)
+
+###### Creation of prior predictives and simulation 
+* Here because "the amplitude of the EEG is about 100 µV when measured on the scalp, and about 1-2 mV when measured on the surface of the brain" (c.f. [This paper](https://www.bem.fi/book/13/13.htm)), we typically should not expect ERPs to have larger peak-to-peak amplitude than about 200µV when measured at the scalp with an EEG cap. In addition, the change in amplitude from baseline should also not be more than the max amplitude 100µV. Finally, if we assume that external noise was removed from the data (e.g. eye blinks), then what remains is just internal noise, and it can be assumed to be minimal (e.g. noise < 15 µV)
+
+We have:
+$$ P600Amplitude_i \sim N(\mu_i,\sigma) $$
+with Linear model:
+$$ \mu_i = \beta_0 + \beta_1 * PercentRecovered_i$$
+
+and priors:
+ * $\beta_0 \sim Uniform(-100,100)$
+ * $\beta_1 \sim Uniform(-50,50)$
+ * $\sigma \sim Uniform(0,15)$  
+
+
+ 
+```{r}
+### Create fake data to use in Prior predictive check
+# Set seed for reproducibility
+set.seed(210)
+# Create var/cov matrix for fake variables 'P600 mean amplitude' and 'Percent word recovered' (imputed in the matrix as full percent e.g. 85 as opposed to proportions e.g. 0.85 to avoid non-positive definite matrix problem in fake data creation)
+cor_matrix <- matrix(c(45,15,15,50), ncol = 2)
+# Create fake data with 100 random observation from a joint normal distribution of mean 80 and variance 45 for 'Percent word recovered' and mean 0 and variance 50 for 'P600 mean amplitude'
+fake_Amp_data <- as_tibble(MASS::mvrnorm(n=100, mu = c(80,10), Sigma = cor_matrix)) %>% 
+  rename('Percent_recovered' = V1, 'P600_Amplitude' = V2)
+
+# Plot fake data
+ggplot(fake_Amp_data, aes(x = Percent_recovered, y = P600_Amplitude)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+```
+ 
+ 
+ 
+```{r, cache=TRUE}
+### prior predictive checks
+# For reproducibility 
+set.seed(210)
+# Set number of samples for simulations
+nsamples <- 1000
+# Create Beta 0s (i.e. different means P600 can have) by taking 1000 random sample from uniform distribution with bounds [-100,100]
+beta0s <- runif(nsamples,-100,100)
+# Create Beta 1s (i.e. change in P600 means ) by taking 1000 random sample from uniform distribution with bounds [-50,50]
+beta1s <- runif(nsamples,-50,50)
+# Create variances for P600 amplitude
+sigmas <- runif(nsamples,0,15)
+# Create empty object to store predicted values from regression created with means mu = B0 + B1 * percent_recovered and sigmas from uniform dist.
+P600_Amp_pred <- NULL
+# Start simulation by create loop that goes through 1000 randomly sampled values from above
+for (i in 1:nsamples) {
+  # Save a randomly drawn beta 0 value in the order it was drawn to object b0
+  b0 <- beta0s[i]
+  # Save a randomly drawn beta 1 value in the order it was drawn to object b1
+  b1 <- beta1s[i]
+  # Save a randomly drawn Sigma value in the order it was drawn to object sigma
+  sigma <- sigmas[i]
+  # Create loop which will use the saved values from the previous loop and the fake data to create a mean mu 
+  for (j in (fake_Amp_data$Percent_recovered)/100){
+    # Create mean mu
+    mu <- b0 + b1 * j
+    # Save p600_pred value created from randomly drawing a value from a normal dist with previously created mean mu and value sigma from previous loop
+    P600_Amp_pred <- c(P600_Amp_pred, rnorm(1, mu, sigma))
+  }
+}
+# Create a data frame with created p600 values and the iteration in which they were created
+prior_pred <- tibble(p600_Amp = P600_Amp_pred, iter = rep(1:nsamples, each =100))
+```
+
+### Prior predictive plot
+```{r}
+### Plot the first 16 created prior predictive
+ggplot(prior_pred %>% filter(iter < 17)) +
+  geom_histogram(aes(x = p600_Amp), fill = "#0c4c8a") +
+  facet_wrap(~iter) +
+  theme_bw()
+```
+
+
+```{r}
+### Create the mean of the aggregate prior predictive
+prior_pred_sum <- prior_pred %>% 
+  group_by(iter) %>% 
+  summarize(mean_Amp = mean(p600_Amp)) %>% 
+  ungroup()
+
+### Plot the mean of the aggregate prior predictive
+ggplot(prior_pred_sum) +
+  geom_histogram(aes(x = mean_Amp), binwidth = 5, fill = "#0c4c8a")
+```
+
+* Based on this choice of priors and the fake data, we obtain a posterior that seem plausible for the type of data we have (i.e. ERP which can have peak-to-peak amplitude of about 200µV when measure at scalp with an EEG)
+
+##### B)
+```{r, cache = TRUE}
+### Fit model using brms
+fit_brm <- brm(values ~ 1 + Percent_recovered,
+               # data set
+               data = P_600_data_short,
+               # distribution family of DV
+               family = gaussian(),
+               # set priors
+               prior = c(
+                 # prior for intercept
+                 prior(uniform(-100,100), class = Intercept),
+                 # prior for beta 1 coef (slope)
+                 prior(uniform(-50,50), class = b),
+                 # prior for variance
+                 prior(uniform(0,15), class = sigma)
+               ),
+               # number of chain desired for Markov chain
+               chains = 4,
+               # number of iteration per chain
+               iter = 2000,
+               # burn-in
+               warmup = 1000,
+               # reproducibility
+               seed = 210)
+```
+
+```{r}
+### Summary
+summary(fit_brm)
+```
+
+* The estimates from the posterior distributions are the same as the ones found when using frequentist statistics.
+
+#### C)
+```{r}
+### Diagnostic plots
+plot(fit_brm)
+```
+
+
+* The caterpillar plots on the right side shows that the 4 chains for the 3 parameter estimated (Beta 0, Beta 1 and sigma) are perfectly mixed and overlapping. This suggests that there is no evidence of non-convergence. In addition, the 4 density plots for each of the parameter on the left are also perfectly overlapping. The 4 chains' estimated values for the posterior distributions of each of the parameters are nearly identical 
+
+```{r}
+### Save model_fit as mcmc object
+model_posterior <- as.mcmc(fit_brm)
+
+### Use coda package to plot Gelman-Rubin Reduction Factor (i.e. PSRF)
+coda::gelman.plot(model_posterior[, 1:4])
+```
+
+* The Potential Reduction Scale Factor which compares the between chain variance to the within chain variance is below 1.05 for each of the parameters (after 2000 iterations). This also brings more evidence that the Markov chains don't seem to have not converge. (This coincide with the Rhat that we see in the summary table)
+
+```{r}
+### Use coda package to plot Geweke-test
+coda::geweke.plot(model_posterior[, 1:4])
+```
+
+* The Geweke test compares the first 10% of the chain (after burn-in) with the remaining 50% (after burn-in) by doing a simple two-sample t-test of the means. If the t-test is significant, then the 10% of the chain used for the t-test is discarded and the next 10% is compared with the remaining 50% . This continues until the test becomes not significant (suggesting convergence), or that more than the remaining 50% of the chain (after burn-in) has be discarded (which will mean the chain has not converge). \
+The plots above show that for each of the parameters and the 4 chains, the Geweke diagnotic is not > 1.96. Thus here again we fail to prove a failure of convergence.
+
+* In addition, the ESS (i.e. Effective Sample Size) from the summary table for of the estimated parameters is above 3600. Given that the chains had 4000 samples in total (1000 * 4 chains) this is a healthy number. The ESS tell us the equivalent amount of information given by a sample whose observations are truly independent from each other. e.g. Markov chains with a total of 1000 iterations and with ESS of 900 tells us that the Markov chains contain as much information as a sample of 900 truly independent observations. Similarly, Markov chains with a total of 1000 iterations and with ESS of 100 would suggest that the Markov chains has as much information as sample of 100 truly independent observations. (This would not be good and would suggest that there is a lot of redundancy/autocorrelations in the chains).
+
+#### D)
+```{r}
+### Posterior predictive check
+pp_check(fit_brm, nsamples = 50, type = "dens_overlay")
+```
+
+* The posterior predictive (i.e. simulated and replicated data under the fitted model) align fairly well with the observed data. There doesn't seem to be major discrepancies between the real and simulated data from the model. Thus, it can be assumed that the model gives us valid predictions about the reality.
+
+#### E)
+In the current model we see that:
+* The estimate for the intercept is 0.95 [0.21; 1.70]
+* The estimate for the effect of percent_recovered is 2.53 [1.54; 3.50]
+* We also see that none of the 95% posterior HDI for these effects include zero, which means that we can be certain that the effect are different from zero. Thus to the question "Is the P600 amplitude related to the probability that the intended word can be recovered?" it seems that there is some evidence suggested that it might be the case. Like in the frequentist framework, it can be said that for one unit of change in probability that the intended word can be recovered, the p600 mean amplitude increases by 2.53 µV.
+
+#### F)
+```{r}
+### Create data frame with percent_ recovered values
+new_dat <- tibble(
+  # create 100 long sequence from minimum value of Percent recovered to maximum value of Percent recovered 
+  Percent_recovered = c( seq(from = min(P_600_data_short$Percent_recovered), 
+                              to = max(P_600_data_short$Percent_recovered), length.out = 100))
+)
+
+# Result data frame
+new_dat
+
+# Create fitted data by adding draws from the posterior "fit" 
+new_dat_fitted <- add_fitted_draws(newdata = new_dat, # Data frame to generate predictions from.
+                                   model = fit_brm, # A supported Bayesian model fit that can provide fits and predictions
+                                   n = 100) # The number of draws per prediction / fit to return
+# Result
+new_dat_fitted
+ 
+### Plot
+ggplot(data = P_600_data_short) +
+  geom_point(aes(x = Percent_recovered, y = values, color = itemNum)) +
+  geom_line(data = new_dat_fitted,
+            aes(x = Percent_recovered, 
+                y = .value,
+                group = .draw), 
+            alpha = 0.1) +
+  labs(title = "P600 amplitude (relative to control) by item over Percent_recovered",
+       subtitle = "Overlaid with fitted regression lines sampled from the posterior",
+        x = "Percent Recovered",
+        y = "Mean P600 Amp (in µV)") +
+    theme_bw() +
+    theme(text=element_text(size = 12)) 
+```
+
+
+
